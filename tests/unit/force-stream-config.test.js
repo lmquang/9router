@@ -150,4 +150,30 @@ describe("forceStream provider config", () => {
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect(executeMock.mock.calls[0][0].stream).toBe(true);
   });
+
+  it("defaults an OpenAI request without stream to non-streaming for Antigravity", async () => {
+    const options = makeOptions(undefined);
+    options.body.model = "ag/gemini-3.8-flash-low";
+    options.modelInfo = { provider: "antigravity", model: "gemini-3.8-flash-low" };
+    options.clientRawRequest.body = options.body;
+
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(options);
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock.mock.calls[0][0].stream).toBe(false);
+  });
+
+  it("honors explicit streaming for an OpenAI request to Antigravity", async () => {
+    const options = makeOptions(true);
+    options.body.model = "ag/gemini-3.8-flash-low";
+    options.modelInfo = { provider: "antigravity", model: "gemini-3.8-flash-low" };
+    options.clientRawRequest.body = options.body;
+
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    await handleChatCore(options);
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock.mock.calls[0][0].stream).toBe(true);
+  });
 });
