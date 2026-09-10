@@ -76,6 +76,69 @@ export function createSSEStream(options = {}) {
   let sseLineCount = 0;
   let sseEmittedCount = 0;
   const eventTypeCounts = {};
+  const streamShape = {
+    providerChunks: 0,
+    providerContentChars: 0,
+    providerThinkingChars: 0,
+    emittedContentChunks: 0,
+    emittedContentChars: 0,
+    emittedReasoningChunks: 0,
+    emittedReasoningChars: 0,
+    emittedRoleOnlyChunks: 0,
+    emittedEmptyDeltaChunks: 0,
+    emittedToolChunks: 0,
+    finishReason: null,
+  };
+
+  const recordProviderShape = (parsed) => {
+    streamShape.providerChunks++;
+    const response = parsed?.response || parsed;
+    const parts = response?.candidates?.[0]?.content?.parts;
+    if (!Array.isArray(parts)) return;
+    for (const part of parts) {
+      if (typeof part?.text !== "string") continue;
+      if (part.thought === true) streamShape.providerThinkingChars += part.text.length;
+      else streamShape.providerContentChars += part.text.length;
+    }
+  };
+
+  const recordEmittedShape = (item) => {
+    if (sourceFormat !== FORMATS.OPENAI) return;
+    const choice = item?.choices?.[0];
+    const delta = choice?.delta;
+    if (!delta || typeof delta !== "object") return;
+
+    if (typeof delta.content === "string" && delta.content.length > 0) {
+      streamShape.emittedContentChunks++;
+      streamShape.emittedContentChars += delta.content.length;
+    }
+    if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+      streamShape.emittedReasoningChunks++;
+      streamShape.emittedReasoningChars += delta.reasoning_content.length;
+    }
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
+      streamShape.emittedToolChunks++;
+    }
+
+    const deltaKeys = Object.keys(delta).filter((key) => {
+      const value = delta[key];
+      return value !== undefined && value !== null && value !== "";
+    });
+    if (deltaKeys.length === 1 && deltaKeys[0] === "role") {
+      streamShape.emittedRoleOnlyChunks++;
+    } else if (deltaKeys.length === 0) {
+      streamShape.emittedEmptyDeltaChunks++;
+    }
+    if (choice.finish_reason) streamShape.finishReason = choice.finish_reason;
+  };
+
+  const emitItem = (item, controller) => {
+    const output = formatSSE(item, sourceFormat);
+    reqLogger?.appendConvertedChunk?.(output);
+    recordEmittedShape(item);
+    controller.enqueue(sharedEncoder.encode(output));
+    sseEmittedCount++;
+  };
 
   // Track Responses API event framing for same-format passthrough (codex)
   let currentOpenAIResponsesEvent = null;
@@ -89,6 +152,19 @@ export function createSSEStream(options = {}) {
   const finalizeStream = () => {
     if (finalized) return;
     finalized = true;
+
+    if (sourceFormat === FORMATS.OPENAI) {
+      console.log(
+        `[STREAM_SHAPE] provider=${provider || targetFormat || "unknown"} model=${model || "unknown"}` +
+        ` target=${targetFormat || "passthrough"} providerChunks=${streamShape.providerChunks}` +
+        ` providerContentChars=${streamShape.providerContentChars} providerThinkingChars=${streamShape.providerThinkingChars}` +
+        ` emitted=${sseEmittedCount} contentChunks=${streamShape.emittedContentChunks}` +
+        ` contentChars=${streamShape.emittedContentChars} reasoningChunks=${streamShape.emittedReasoningChunks}` +
+        ` reasoningChars=${streamShape.emittedReasoningChars} roleOnly=${streamShape.emittedRoleOnlyChunks}` +
+        ` emptyDelta=${streamShape.emittedEmptyDeltaChunks} toolChunks=${streamShape.emittedToolChunks}` +
+        ` finish=${streamShape.finishReason || "none"}`
+      );
+    }
 
     const isPassthrough = mode === STREAM_MODE.PASSTHROUGH;
     let finalUsage = isPassthrough ? usage : state?.usage;
@@ -189,6 +265,8 @@ export function createSSEStream(options = {}) {
               }
 
               const delta = parsed.choices?.[0]?.delta;
+              recordProviderShape(parsed);
+              recordEmittedShape(parsed);
               const content = delta?.content;
               const reasoning = delta?.reasoning_content;
               if (content && typeof content === "string") {
@@ -285,6 +363,8 @@ export function createSSEStream(options = {}) {
           continue;
         }
 
+        recordProviderShape(parsed);
+
         // Claude format - content
         if (parsed.delta?.text) {
           totalContentLength += parsed.delta.text.length;
@@ -371,10 +451,7 @@ export function createSSEStream(options = {}) {
               item.usage = filterUsageForFormat(buffered, sourceFormat);
             }
 
-            const output = formatSSE(item, sourceFormat);
-            reqLogger?.appendConvertedChunk?.(output);
-            controller.enqueue(sharedEncoder.encode(output));
-            sseEmittedCount++;
+            emitItem(item, controller);
           }
         }
       }
@@ -442,9 +519,7 @@ export function createSSEStream(options = {}) {
             if (translated?.length > 0) {
               for (const item of translated) {
                 if (item === null || item === undefined) continue;
-                const output = formatSSE(item, sourceFormat);
-                reqLogger?.appendConvertedChunk?.(output);
-                controller.enqueue(sharedEncoder.encode(output));
+                emitItem(item, controller);
               }
             }
           }
@@ -462,9 +537,7 @@ export function createSSEStream(options = {}) {
         if (flushed?.length > 0) {
           for (const item of flushed) {
             if (item === null || item === undefined) continue;
-            const output = formatSSE(item, sourceFormat);
-            reqLogger?.appendConvertedChunk?.(output);
-            controller.enqueue(sharedEncoder.encode(output));
+            emitItem(item, controller);
           }
         }
 

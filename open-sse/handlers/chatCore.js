@@ -131,7 +131,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const clientRequestedStreaming = body.stream === true || sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI;
   const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true;
-  let stream = providerRequiresStreaming ? true : (body.stream !== false);
+  // OpenAI Chat Completions defaults `stream` to false when the field is omitted.
+  // Native provider formats historically stream by default, so preserve that behavior.
+  const sourceDefaultsToStreaming = sourceFormat !== FORMATS.OPENAI && sourceFormat !== FORMATS.OPENAI_RESPONSES;
+  let stream = providerRequiresStreaming || body.stream === true || (body.stream === undefined && sourceDefaultsToStreaming);
 
   // Image generation models require non-streaming (Google v1internal:generateContent)
   const modelType = getModelType(alias, model);
