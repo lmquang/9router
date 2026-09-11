@@ -17,6 +17,7 @@ RUN if [ "$ALPINE_MIRROR" != "dl-cdn.alpinelinux.org" ]; then \
 FROM base AS builder
 ARG NPM_REGISTRY
 
+<<<<<<< HEAD
 RUN apk add --no-cache python3 make g++ linux-headers
 
 COPY package.json ./
@@ -28,6 +29,14 @@ RUN --mount=type=cache,target=/root/.npm \
       --fetch-retry-mintimeout=10000 \
       --fetch-retry-maxtimeout=120000 \
       --fetch-timeout=300000
+=======
+RUN --mount=type=cache,id=9router-apk-builder,target=/var/cache/apk,sharing=locked \
+  apk upgrade && apk add python3 make g++ linux-headers
+
+COPY package.json ./
+RUN --mount=type=cache,id=9router-npm,target=/root/.npm,sharing=locked \
+  npm install --prefer-offline --registry=https://registry.npmmirror.com
+>>>>>>> ece6e1e9 (build(docker): use cache mounts for apk and npm)
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -72,9 +81,15 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
   ln -sf /app/data-home /root/.9router 2>/dev/null || true
 
+<<<<<<< HEAD
 # Avoid a full distribution upgrade in the runtime image. It makes builds less
 # reproducible and is unrelated to installing the runtime entrypoint helper.
 RUN apk add --no-cache su-exec && \
+=======
+# Fix permissions at runtime (handles mounted volumes)
+RUN --mount=type=cache,id=9router-apk-runner,target=/var/cache/apk,sharing=locked \
+  apk upgrade && apk add su-exec && \
+>>>>>>> ece6e1e9 (build(docker): use cache mounts for apk and npm)
   printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
   chmod +x /entrypoint.sh
 
