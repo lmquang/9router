@@ -17,10 +17,11 @@ RUN if [ "$ALPINE_MIRROR" != "dl-cdn.alpinelinux.org" ]; then \
 FROM base AS builder
 ARG NPM_REGISTRY
 
-RUN apk add --no-cache python3 make g++ linux-headers
+RUN --mount=type=cache,id=9router-apk-builder,target=/var/cache/apk,sharing=locked \
+  apk add python3 make g++ linux-headers
 
 COPY package.json ./
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,id=9router-npm,target=/root/.npm,sharing=locked \
     npm install \
       --registry="${NPM_REGISTRY}" \
       --fetch-retries=5 \
@@ -74,7 +75,8 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
 
 # Avoid a full distribution upgrade in the runtime image. It makes builds less
 # reproducible and is unrelated to installing the runtime entrypoint helper.
-RUN apk add --no-cache su-exec && \
+RUN --mount=type=cache,id=9router-apk-runner,target=/var/cache/apk,sharing=locked \
+  apk add su-exec && \
   printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
   chmod +x /entrypoint.sh
 

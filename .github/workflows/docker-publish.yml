@@ -7,11 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing vX.Y.Z tag to publish"
-        required: true
+        description: "Existing vX.Y.Z tag to republish (leave empty for master-commit build)"
+        required: false
+        type: string
+      commit_sha:
+        description: "Commit SHA on master to build (defaults to master HEAD)"
+        required: false
+        type: string
+      image_tag:
+        description: "Docker tag to publish (defaults to master-<short-sha>)"
+        required: false
         type: string
       promote_latest:
-        description: "Promote this republish to latest"
+        description: "Promote this build to latest"
         required: false
         default: false
         type: boolean
@@ -24,7 +32,8 @@ concurrency:
   queue: max
 
 env:
-  DOCKERHUB_IMAGE: decolua/9router
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+  DOCKERHUB_IMAGE: lmquang/9router
 
 jobs:
   prepare:
@@ -43,16 +52,19 @@ jobs:
       ghcr_image: ${{ steps.release.outputs.ghcr_image }}
 
     steps:
-      - name: Check out release tag
+      - name: Check out release ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref_name }}
-          fetch-depth: 1
+          ref: ${{ inputs.commit_sha || inputs.release_tag || github.sha }}
+          fetch-depth: 0
 
-      - name: Validate tag and package versions
+      - name: Validate release ref and resolve outputs
         id: release
         env:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
           REPOSITORY: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
           PROMOTE_LATEST_INPUT: ${{ inputs.promote_latest && 'true' || 'false' }}
@@ -60,6 +72,68 @@ jobs:
           node <<'NODE'
           const fs = require("fs");
           const { execFileSync } = require("child_process");
+
+          const commitInput = (process.env.COMMIT_SHA || "").trim();
+          const releaseTagInput = (process.env.RELEASE_TAG_INPUT || "").trim();
+          const imageTagInput = (process.env.IMAGE_TAG || "").trim();
+          // Manual dispatch without a release_tag means "build master":
+          // use the given commit_sha, or the dispatched HEAD (github.sha) when empty.
+          const isManualCommitBuild = commitInput.length > 0
+            || (process.env.EVENT_NAME === "workflow_dispatch" && releaseTagInput.length === 0);
+          const publishDockerHub = process.env.REPOSITORY === "decolua/9router";
+          const ghcrImage = `ghcr.io/${process.env.REPOSITORY.toLowerCase()}`;
+          const output = process.env.GITHUB_OUTPUT;
+
+          const isDockerTag = (t) => t.length <= 128 && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(t);
+
+          if (isManualCommitBuild) {
+            if (commitInput && releaseTagInput) {
+              console.error("Provide either release_tag or commit_sha, not both.");
+              process.exit(1);
+            }
+            const shaToResolve = commitInput || process.env.GITHUB_SHA || "HEAD";
+            if (commitInput && !/^[0-9a-f]{4,40}$/i.test(commitInput)) {
+              console.error(`commit_sha must be a git SHA (4-40 hex chars), received: ${commitInput}`);
+              process.exit(1);
+            }
+
+            execFileSync("git", ["fetch", "origin", "master"], { stdio: "inherit" });
+            const commit = execFileSync("git", ["rev-parse", shaToResolve], { encoding: "utf8" }).trim();
+            try {
+              execFileSync("git", ["merge-base", "--is-ancestor", commit, "origin/master"]);
+            } catch {
+              console.error(`Commit ${commit} is not reachable from origin/master.`);
+              process.exit(1);
+            }
+
+            let imageTag = imageTagInput;
+            if (!imageTag) {
+              const short = execFileSync("git", ["rev-parse", "--short", commit], { encoding: "utf8" }).trim();
+              imageTag = `master-${short}`;
+            }
+            if (!isDockerTag(imageTag)) {
+              console.error(`image_tag is not a valid Docker tag: ${imageTag}`);
+              process.exit(1);
+            }
+            if (imageTag === "latest") {
+              console.error('Use promote_latest instead of image_tag "latest" for master-commit builds.');
+              process.exit(1);
+            }
+
+            const pkgVersion = require("./package.json").version;
+            const promoteLatest = process.env.PROMOTE_LATEST_INPUT === "true";
+
+            fs.appendFileSync(output, `tag=${imageTag}\n`);
+            fs.appendFileSync(output, `version=${imageTag}\n`);
+            fs.appendFileSync(output, `commit=${commit}\n`);
+            fs.appendFileSync(output, `publish_dockerhub=${publishDockerHub}\n`);
+            fs.appendFileSync(output, `promote_latest=${promoteLatest}\n`);
+            fs.appendFileSync(output, `ghcr_image=${ghcrImage}\n`);
+
+            console.log(`Validated master-commit build ${commit} (package ${pkgVersion}) as ${imageTag}`);
+            console.log(`latest promotion: ${promoteLatest ? "enabled" : "disabled"}`);
+            process.exit(0);
+          }
 
           const tag = process.env.RELEASE_TAG || "";
           const match = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)$/.exec(tag);
@@ -104,12 +178,9 @@ jobs:
           }
 
           const commit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-          const publishDockerHub = process.env.REPOSITORY === "decolua/9router";
-          const ghcrImage = `ghcr.io/${process.env.REPOSITORY.toLowerCase()}`;
           const isPrerelease = version.includes("-");
           const promoteLatest = (process.env.EVENT_NAME === "push" && !isPrerelease)
             || process.env.PROMOTE_LATEST_INPUT === "true";
-          const output = process.env.GITHUB_OUTPUT;
 
           fs.appendFileSync(output, `tag=${tag}\n`);
           fs.appendFileSync(output, `version=${version}\n`);
@@ -381,7 +452,7 @@ jobs:
             echo "- Policy: promote \`latest\` after the verified ${VERSION} manifest." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Latest promotion" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Policy: leave \`latest\` unchanged; this is a numbered-tag-only manual republish." >> "$GITHUB_STEP_SUMMARY"
+            echo "- Policy: leave \`latest\` unchanged; this is a manual build without latest promotion." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Promote verified version to latest
