@@ -2,6 +2,8 @@ name: Build and Push Docker Image
 
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
   workflow_dispatch:
@@ -76,9 +78,10 @@ jobs:
           const commitInput = (process.env.COMMIT_SHA || "").trim();
           const releaseTagInput = (process.env.RELEASE_TAG_INPUT || "").trim();
           const imageTagInput = (process.env.IMAGE_TAG || "").trim();
-          // Manual dispatch without a release_tag means "build master":
-          // use the given commit_sha, or the dispatched HEAD (github.sha) when empty.
-          const isManualCommitBuild = commitInput.length > 0
+          // Master pushes and manual dispatch without a release_tag build a commit:
+          // use the given commit_sha, or the event HEAD (github.sha) when empty.
+          const isMasterPush = process.env.EVENT_NAME === "push" && process.env.GITHUB_REF === "refs/heads/master";
+          const isManualCommitBuild = isMasterPush || commitInput.length > 0
             || (process.env.EVENT_NAME === "workflow_dispatch" && releaseTagInput.length === 0);
           const publishDockerHub = process.env.REPOSITORY === "decolua/9router";
           const ghcrImage = `ghcr.io/${process.env.REPOSITORY.toLowerCase()}`;
@@ -121,7 +124,7 @@ jobs:
             }
 
             const pkgVersion = require("./package.json").version;
-            const promoteLatest = process.env.PROMOTE_LATEST_INPUT === "true";
+            const promoteLatest = isMasterPush || process.env.PROMOTE_LATEST_INPUT === "true";
 
             fs.appendFileSync(output, `tag=${imageTag}\n`);
             fs.appendFileSync(output, `version=${imageTag}\n`);
